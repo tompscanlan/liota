@@ -29,43 +29,20 @@
 #  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF     #
 #  THE POSSIBILITY OF SUCH DAMAGE.                                            #
 # ----------------------------------------------------------------------------#
+import logging
 
-from liota.core.package_manager import LiotaPackage
+log = logging.getLogger(__name__)
 
-dependencies = ["edge_systems/dell5k/edge_system"]
+class TLSConf:
 
-
-class PackageClass(LiotaPackage):
     """
-    This package creates a Graphite DCC object and registers system on
-    Graphite to acquire "registered edge system", i.e. graphite_edge_system.
+    This class encapsulates TLS options :
+        - cert_required : defines the certificate requirements
+        - tls_version : version of SSL/TLS protocol to be used
+        - cipher : which encryption ciphers are allowed for connection
     """
 
-    def run(self, registry):
-        import copy
-        from liota.dccs.graphite import Graphite
-        from liota.dcc_comms.socket_comms import SocketDccComms
-
-        # Acquire resources from registry
-        # Creating a copy of system object to keep original object "clean"
-        edge_system = copy.copy(registry.get("edge_system"))
-
-        # Get values from configuration file
-        config_path = registry.get("package_conf")
-        config = {}
-        execfile(config_path + '/sampleProp.conf', config)
-
-        # Initialize DCC object with transport
-        self.graphite = Graphite(
-            SocketDccComms(ip=config['GraphiteIP'],
-                   port=config['GraphitePort'])
-        )
-
-        # Register gateway system
-        graphite_edge_system = self.graphite.register(edge_system)
-
-        registry.register("graphite", self.graphite)
-        registry.register("graphite_edge_system", graphite_edge_system)
-
-    def clean_up(self):
-        self.graphite.comms.sock.close()
+    def __init__(self, cert_required, tls_version, cipher):
+        self.cert_required = cert_required
+        self.tls_version = tls_version
+        self.cipher = cipher

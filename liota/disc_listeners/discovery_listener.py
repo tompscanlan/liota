@@ -30,42 +30,25 @@
 #  THE POSSIBILITY OF SUCH DAMAGE.                                            #
 # ----------------------------------------------------------------------------#
 
-from liota.core.package_manager import LiotaPackage
+from abc import ABCMeta, abstractmethod
+from threading import Thread
 
-dependencies = ["edge_systems/dell5k/edge_system"]
-
-
-class PackageClass(LiotaPackage):
+class DiscoveryListener(Thread):
     """
-    This package creates a Graphite DCC object and registers system on
-    Graphite to acquire "registered edge system", i.e. graphite_edge_system.
+    DiscoveryListener is ABC (abstract base class) of all listening classes.
+    Developers should extend DiscoveryListener class and implement the abstract methods.
     """
 
-    def run(self, registry):
-        import copy
-        from liota.dccs.graphite import Graphite
-        from liota.dcc_comms.socket_comms import SocketDccComms
+    __metaclass__ = ABCMeta
 
-        # Acquire resources from registry
-        # Creating a copy of system object to keep original object "clean"
-        edge_system = copy.copy(registry.get("edge_system"))
+    @abstractmethod
+    def __init__(self, name):
+        Thread.__init__(self, name=name)
 
-        # Get values from configuration file
-        config_path = registry.get("package_conf")
-        config = {}
-        execfile(config_path + '/sampleProp.conf', config)
+    @abstractmethod
+    def run(self):
+        raise NotImplementedError
 
-        # Initialize DCC object with transport
-        self.graphite = Graphite(
-            SocketDccComms(ip=config['GraphiteIP'],
-                   port=config['GraphitePort'])
-        )
-
-        # Register gateway system
-        graphite_edge_system = self.graphite.register(edge_system)
-
-        registry.register("graphite", self.graphite)
-        registry.register("graphite_edge_system", graphite_edge_system)
-
+    @abstractmethod
     def clean_up(self):
-        self.graphite.comms.sock.close()
+        raise NotImplementedError

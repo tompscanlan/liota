@@ -36,6 +36,7 @@ import time
 import threading
 import ConfigParser
 import os
+from time import gmtime, strftime
 
 from liota.dccs.dcc import DataCenterComponent, RegistrationFailure
 from liota.lib.protocols.helix_protocol import HelixProtocol
@@ -60,7 +61,8 @@ class IotControlCenter(DataCenterComponent):
         self.username = username
         self.password = password
         self.proto = HelixProtocol(self.con, username, password)
-        self.info_file = self._init_info()
+
+        self.dev_file_path = self._get_dev_file_path()
 
         def on_receive_safe(msg):
             try:
@@ -129,10 +131,13 @@ class IotControlCenter(DataCenterComponent):
                 raise RegistrationFailure()
             log.info("Resource Registered {0}".format(entity_obj.name))
             if entity_obj.entity_type == "HelixGateway":
-                self.store_reg_entity_details("EdgeSystem", entity_obj.name, self.reg_entity_id)
-                self.store_edge_system_uuid(entity_obj.name, self.reg_entity_id)
+                self.store_reg_entity_attributes("EdgeSystem", entity_obj.name,
+                    self.reg_entity_id, None, None)
             else:
-                self.store_reg_entity_details("Devices", entity_obj.name, self.reg_entity_id)
+                # get dev_type, and prop_dict if possible
+                self.store_reg_entity_attributes("Devices", entity_obj.name, self.reg_entity_id,
+                    entity_obj.entity_type, None)
+
             return RegisteredEntity(entity_obj, self, self.reg_entity_id)
 
     def create_relationship(self, reg_entity_parent, reg_entity_child):
@@ -194,6 +199,13 @@ class IotControlCenter(DataCenterComponent):
             msg["body"]["property_data"].append({"propertyKey": key, "propertyValue": value})
         return msg
 
+    def _get_properties(self, msg_id, res_uuid):
+        return {
+            "transactionID": msg_id,
+            "type": "get_properties",
+            "uuid": res_uuid
+        }
+
     def _format_data(self, reg_metric):
         met_cnt = reg_metric.values.qsize()
         if met_cnt == 0:
@@ -230,6 +242,13 @@ class IotControlCenter(DataCenterComponent):
         self.con.send(
             self._properties(self.con.next_id(), reg_entity_id, entity.entity_type,
                              getUTCmillis(), properties))
+        if entity.entity_type == "HelixGateway":
+            self.store_reg_entity_attributes("EdgeSystem", entity.name,
+                reg_entity_obj.reg_entity_id, None, properties)
+        else:
+            # get dev_type, and prop_dict if possible
+            self.store_reg_entity_attributes("Devices", entity.name, reg_entity_obj.reg_entity_id,
+                entity.entity_type, properties)
 
     def publish_unit(self, reg_entity_obj, metric_name, unit):
         str_prefix, str_unit_name = parse_unit(unit)
@@ -244,86 +263,256 @@ class IotControlCenter(DataCenterComponent):
         self.set_properties(reg_entity_obj, properties_added)
         log.info("Published metric unit with prefix to IoTCC")
 
-    def _init_info(self):
-        msg = {
-            "iotcc": {
-                "EdgeSystem": {"SystemName": "", "uuid": ""},
-                "Devices": []
+
+    def store_edge_system_info(self, uuid, name, prop_list):
+        import lxml.etree as etree
+
+        """
+        create (can overwrite) edge system info file of UUID.xml, with format of
+        <attributes>
+        <attribute name=attribute name value=attribute value/>
+        …
+        </attributes>
+        except the first attribute is edge system name, all other attributes may vary
+        """
+        log.debug("store_edge_system_info")
+        log.debug('{0}:{1}, prop_list: {2}'.format(uuid, name, prop_list))
+        root = etree.Element("attributes")
+        # add edge system name as an attribute
+        child = etree.SubElement(root, "attribute")
+        attributes = child.attrib
+        attributes["name"] = "edge system name"
+        attributes["value"] = name
+        # add edge system properties as attributes
+        if prop_list is not None:
+            for i, dict in enumerate(prop_list):
+                for key, value in dict.items():
+                    child1 = etree.SubElement(root, "attribute")
+                    attributes = child1.attrib
+                    attributes["name"] = key
+                    attributes["value"] = value
+        # add time stamp
+        child1 = etree.SubElement(root, "attribute")
+        attributes = child1.attrib
+        attributes["name"] = "LastSeenTimestamp"
+        attributes["value"] = strftime("%Y-%m-%dT%H:%M:%S", gmtime())
+
+        et = etree.ElementTree(root)
+        log.debug("store_edge_system_info dev_file_path:{0}".format(self.dev_file_path))
+        file_path = self.dev_file_path + '/' + uuid + '.xml'
+        et.write(file_path, pretty_print=True)
+
+        return
+
+    def store_device_info(self, uuid, name, dev_type, prop_list):
+        """
+        create (can overwrite) device info file of device_UUID.json, with format of
+        {
+            "discovery":  {
+                "remove" : false,
+                "attributes": [
+                    {"IoTDeviceType" : "LM35"},
+                    {"IoTDeviceName" : "LM35-12345"},
+                    {"model": "LM35-A2"},
+                    {"function": "thermistor"},
+                    {"port" : "GPIO-3"},
+                    {"manufacturer" : "Texas Instrument"},
+                    {"LastSeenTimestamp" : "04 NOV 2016"}
+                ]
             }
         }
-        config = ConfigParser.RawConfigParser()
-        fullPath = LiotaConfigPath().get_liota_fullpath()
-        iotcc_path = ''
-        if fullPath != '':
-            try:
-                if config.read(fullPath) != []:
-                    try:
-                        iotcc_path = config.get('IOTCC_PATH', 'iotcc_path')
-                    except ConfigParser.ParsingError, err:
-                        log.error('Could not open config file')
-                else:
-                    raise IOError('Could not open config file ' + fullPath)
-            except IOError, err:
-                log.error('Could not open config file ' + err)
-            path = os.path.dirname(iotcc_path)
-            mkdir_log(path)
-            try:
-                with open(iotcc_path, 'w') as f:
-                    json.dump(msg, f, sort_keys = True, indent = 4, ensure_ascii=False)
-                    log.debug('Initialized ' + iotcc_path)
-                f.close()
-            except IOError, err:
-                log.error('Could not open {0} file '.format(iotcc_path) + err)
-        else:
-            # missing config file
-            log.warn('liota.conf file missing')
-        return iotcc_path
-
-    def store_reg_entity_details(self, entity_type, entity_name, reg_entity_id):
-        msg = ''
-        if self.info_file == '':
-            log.warn('iotcc.json file missing')
-            return
+        except IoTDeviceType and IoTDeviceName, all other attributes may vary
+        """
+        log.debug("store_device_info")
+        log.debug('prop_dict: {0}'.format(prop_list))
+        attribute_list = [{"IoTDeviceType": dev_type},
+                    {"IoTDeviceName": name}]
+        # attribute_list.append(prop_dict)
+        if prop_list is not None:
+            for i, dict in enumerate(prop_list):
+                for key, value in dict.items():
+                    log.debug("prop_list:(%s : %s)\n" % (key, value))
+                    attribute_list.append({key: value})
+        attribute_list.append({"LastSeenTimestamp": strftime("%Y-%m-%dT%H:%M:%S", gmtime())})
+        log.debug('attribute_list: {0}'.format(attribute_list))
+        msg = {
+            "discovery":  {
+                "remove" : False,
+                "attributes": attribute_list
+            }
+        }
+        log.debug('msg: {0}'.format(msg))
+        log.debug("store_device_info dev_file_path:{0}".format(self.dev_file_path))
+        file_path = self.dev_file_path + '/' + uuid + '.json'
         try:
-            with open(self.info_file, 'r') as f:
-                msg = json.load(f)
+            with open(file_path, 'w') as f:
+                json.dump(msg, f, sort_keys = True, indent = 4, ensure_ascii=False)
+                log.debug('Initialized ' + file_path)
             f.close()
         except IOError, err:
-            log.error('Could not open {0} file '.format(self.info_file) + str(err))
-        log.debug('{0}:{1}'.format(entity_name, reg_entity_id))
+            log.error('Could not open {0} file '.format(file_path) + err)
+
+    def store_reg_entity_attributes(self, entity_type, entity_name, reg_entity_id,
+        dev_type, prop_dict):
+
+        log.debug('store_reg_entity_attributes\n {0}:{1}:{2}:{3}'.format(entity_type,
+             entity_name, reg_entity_id, prop_dict))
+
+        # need to get a complete property list (B) first from iotcc
+        # if prop_dict (A) is not None, i.e., it is called from set_properties,
+        # need to get properties multiple times, until all (k,v) in A are also in B,
+        #  that is, set_properties has been really completed.
+        # Then, write B to file
+        get_prop_cnt = 0
+        if prop_dict is None: # means get_properties is called after registration
+            get_prop_cnt_limit = 1
+        else:
+            get_prop_cnt_limit = 5
+        self.prop_list = None
+        while get_prop_cnt < get_prop_cnt_limit:
+            log.debug('sleep 1 sec before getting properties')
+            time.sleep(1)
+            self.get_properties(reg_entity_id)
+            prop_list = self.prop_list
+            get_prop_cnt += 1
+            if prop_list is None:
+                log.info("403 prop_list is None:{0}".format((prop_list is None)))
+                continue
+            if prop_list == "":
+                log.info("406 prop_list is None:{0}".format((prop_list == "")))
+                continue
+            if prop_dict is None:
+                log.info("prop_dict is None")
+                break
+            # check all (k, v) in prop_dict are the same as in prop_list
+            complete_list_flag = True
+            for k in prop_dict.iterkeys():
+                v = prop_dict[k]
+                fnd_key = False
+                for index, item in enumerate(prop_list):
+                    if k in item.keys():
+                        fnd_key = True
+                        v_in_list = item[k]
+                        break
+                if fnd_key == False:
+                    # new key in prop_dict
+                    complete_list_flag = False
+                    break # continue while loop to get_properties again
+                else:
+                    if v_in_list != v:
+                        # value is not updated in prop_list
+                        complete_list_flag = False
+                        break # continue while loop to get_properties again
+            if not complete_list_flag:
+                log.debug("NOT complete property list")
+                time.sleep(1)
+                continue # while
+            else:
+                log.debug("IS complete property list")
+                break # found completed
+
+        if (get_prop_cnt >= get_prop_cnt_limit) and (prop_dict is not None):
+            # not complete list, need to merge to get new list
+            prop_list = self.merge_prop_list(prop_dict, prop_list)
         if entity_type == "EdgeSystem":
-            msg["iotcc"]["EdgeSystem"]["SystemName"] = entity_name
-            msg["iotcc"]["EdgeSystem"]["uuid"] = reg_entity_id
+            self.store_edge_system_info(reg_entity_id, entity_name, prop_list)
         elif entity_type == "Devices":
-            msg["iotcc"]["Devices"].append({"DeviceName": entity_name, "uuid": reg_entity_id})
+            self.store_device_info(reg_entity_id, entity_name, dev_type, prop_list)
         else:
             return
-        if msg != '':
-            with open(self.info_file, 'w') as f:
-                json.dump(msg, f, sort_keys = True, indent = 4, ensure_ascii=False)
-            f.close()
 
-    def store_edge_system_uuid(self, entity_name, reg_entity_id):
+    def merge_prop_list(self, prop_dict, prop_list):
+        # prop_dict: new property dictionary (must not be null)
+        # prop_list: list of dictionary items (must not be null)
+        if (prop_dict is None):
+            return prop_list
+        if (prop_list is None):
+            return prop_dict
+        for k in prop_dict.iterkeys():
+            v = prop_dict[k]
+            fnd_key = False
+            for index, item in enumerate(prop_list):
+                if k in item.keys():
+                    fnd_key = True
+                    if (item[k] != v):
+                        item[k] = v
+                        break
+            if fnd_key == False:
+                # new key in prop_dict, add to prop_list
+                prop_list.append({k, v})
+        # get updated list
+        return prop_list
+
+    def _get_dev_file_path(self):
+
+        log.debug("_get_dev_file_path dev_file_path:")
         config = ConfigParser.RawConfigParser()
         fullPath = LiotaConfigPath().get_liota_fullpath()
         if fullPath != '':
             try:
                 if config.read(fullPath) != []:
                     try:
-                        uuid_path = config.get('UUID_PATH', 'uuid_path')
-                        uuid_config = ConfigParser.RawConfigParser()
-                        uuid_config.optionxform = str
-                        uuid_config.add_section('GATEWAY')
-                        uuid_config.set('GATEWAY', 'uuid', reg_entity_id)
-                        uuid_config.set('GATEWAY', 'name', entity_name)
-                        with open(uuid_path, 'w') as configfile:
-                            uuid_config.write(configfile)
-                    except ConfigParser.ParsingError, err:
+                        # retrieve device info file storage directory
+                        dev_file_path = config.get('IOTCC_PATH', 'dev_file_path')
+                        log.debug("_get_dev_file_path dev_file_path:{0}".format(dev_file_path))
+                    except ConfigParser.ParsingError as err:
                         log.error('Could not open config file ' + err)
+                        return None
+                    if not os.path.exists(dev_file_path):
+                        try:
+                            os.makedirs(dev_file_path)
+                        except OSError as exc:  # Python >2.5
+                            if exc.errno == errno.EEXIST and os.path.isdir(dev_file_path):
+                                pass
+                            else:
+                                log.error('Could not create device file storage directory')
+                                return None
+                    log.debug("_get_dev_file_path dev_file_path:{0}".format(dev_file_path))
+                    return dev_file_path
                 else:
-                    raise IOError('Could not open config file ' + fullPath)
+                    log.error('Could not open config file ' + fullPath)
+                    return None
             except IOError, err:
                 log.error('Could not open config file')
+                return None
         else:
             # missing config file
             log.warn('liota.conf file missing')
+            return None
+
+    def get_properties(self, resource_uuid):
+        """ get list of properties with resource uuid """
+
+        log.info("Get properties defined with IoTCC for resource {0}".format(resource_uuid))
+        self.prop_list = None
+        self.get_cnt = 0
+        def on_receive_safe(msg):
+            try:
+                log.debug("Received msg: {0}".format(msg))
+                if msg != "":
+                    json_msg = json.loads(msg)
+                    self.proto.on_receive(json_msg)
+                    log.debug("Processed msg: {0}".format(json_msg["type"]))
+                    if json_msg["type"] == "get_properties_response":
+                        if json_msg["body"]["uuid"] == resource_uuid:
+                            log.info("FOUND PROPERTIE LIST: {0}".format(json_msg["body"]["propertyList"]))
+                            self.prop_list = json_msg["body"]["propertyList"]
+                            log.info("prop_list:{0}".format(self.prop_list))
+                            exit()
+                        else:
+                            self.get_cnt += 1
+                            if self.get_cnt > 5:
+                                exit()
+                            log.info("Waiting for properties")
+                            time.sleep(1)
+                            self.con.send(self._get_properties(self.con.next_id(), resource_uuid))
+            except:
+                raise
+
+        thread = threading.Thread(target=self.con.run)
+        self.con.on_receive = on_receive_safe
+        thread.daemon = True
+        thread.start()
+        self.con.send(self._get_properties(self.con.next_id(), resource_uuid))
+        thread.join()
+        return self.prop_list

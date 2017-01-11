@@ -29,43 +29,45 @@
 #  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF     #
 #  THE POSSIBILITY OF SUCH DAMAGE.                                            #
 # ----------------------------------------------------------------------------#
+import logging
 
-from liota.core.package_manager import LiotaPackage
+from liota.lib.transports.mqtt import Mqtt
+from liota.device_comms.device_comms import DeviceComms
 
-dependencies = ["edge_systems/dell5k/edge_system"]
+log = logging.getLogger(__name__)
 
 
-class PackageClass(LiotaPackage):
-    """
-    This package creates a Graphite DCC object and registers system on
-    Graphite to acquire "registered edge system", i.e. graphite_edge_system.
-    """
+class MqttDeviceComms(DeviceComms):
 
-    def run(self, registry):
-        import copy
-        from liota.dccs.graphite import Graphite
-        from liota.dcc_comms.socket_comms import SocketDccComms
+    def __init__(self, edge_system_identity, tls_details, qos_details, url, port, keepalive = 60, enable_authentication = True):
+        self.edge_system_identity = edge_system_identity
+        self.tls_details = tls_details
+        self.url = url
+        self.port = port
+        self.keepalive = keepalive
+        self.qos_details = qos_details
+        self.enable_authentication = enable_authentication
+        self._connect()
 
-        # Acquire resources from registry
-        # Creating a copy of system object to keep original object "clean"
-        edge_system = copy.copy(registry.get("edge_system"))
+    # Connect with MQTT broker
+    def _connect(self):
+        self.mqtt_client = Mqtt(self.edge_system_identity, self.tls_details, self.qos_details, self.url, self.port,
+                                self.keepalive, self.enable_authentication)
 
-        # Get values from configuration file
-        config_path = registry.get("package_conf")
-        config = {}
-        execfile(config_path + '/sampleProp.conf', config)
+    # Disconnect method
+    def _disconnect(self):
+        self.mqtt_client.disconnect()
 
-        # Initialize DCC object with transport
-        self.graphite = Graphite(
-            SocketDccComms(ip=config['GraphiteIP'],
-                   port=config['GraphitePort'])
-        )
+    # Publish Method
+    def publish(self, topic, message, qos, retain = False):
+        self.mqtt_client.publish(topic, message, qos, retain)
 
-        # Register gateway system
-        graphite_edge_system = self.graphite.register(edge_system)
+    # Subscribe Method
+    def subscribe(self, topic, qos):
+        self.mqtt_client.subscribe(topic, qos)
 
-        registry.register("graphite", self.graphite)
-        registry.register("graphite_edge_system", graphite_edge_system)
+    def send(self, message):
+        raise NotImplementedError
 
-    def clean_up(self):
-        self.graphite.comms.sock.close()
+    def receive(self):
+        raise NotImplementedError

@@ -32,40 +32,24 @@
 
 from liota.core.package_manager import LiotaPackage
 
-dependencies = ["edge_systems/dell5k/edge_system"]
-
+dependencies = []
 
 class PackageClass(LiotaPackage):
-    """
-    This package creates a Graphite DCC object and registers system on
-    Graphite to acquire "registered edge system", i.e. graphite_edge_system.
-    """
 
     def run(self, registry):
-        import copy
-        from liota.dccs.graphite import Graphite
-        from liota.dcc_comms.socket_comms import SocketDccComms
-
-        # Acquire resources from registry
-        # Creating a copy of system object to keep original object "clean"
-        edge_system = copy.copy(registry.get("edge_system"))
+        from liota.core.device_discovery import DiscoveryThread, CmdMessengerThread
 
         # Get values from configuration file
         config_path = registry.get("package_conf")
         config = {}
         execfile(config_path + '/sampleProp.conf', config)
 
-        # Initialize DCC object with transport
-        self.graphite = Graphite(
-            SocketDccComms(ip=config['GraphiteIP'],
-                   port=config['GraphitePort'])
-        )
+#---------------------------------------------------------------------------
+# Initialization should occur when this module is imported for first time.
+# This method create queues and spawns DiscoveryThread, which will spins up
+# listening threads for listed listeners in liota.conf for new devices.
 
-        # Register gateway system
-        graphite_edge_system = self.graphite.register(edge_system)
-
-        registry.register("graphite", self.graphite)
-        registry.register("graphite_edge_system", graphite_edge_system)
+        self.discovery_thread = DiscoveryThread(name="DiscoveryThread", registry=registry)
 
     def clean_up(self):
-        self.graphite.comms.sock.close()
+        self.discovery_thread._terminate_all()

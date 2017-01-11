@@ -248,5 +248,10 @@ class SteadyState(State):
             # Not checked right now
             return True
 
+        elif msg["type"] == "get_properties_response":
+            require_field(msg["body"], "uuid")
+            require_field(msg["body"], "propertyList")
+            return True
+
         else:
             return False
