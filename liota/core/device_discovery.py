@@ -32,24 +32,16 @@
 
 import logging
 import inspect
-import imp
 import os
 import sys
-import json
 import fcntl
 import errno
-import stat
-import re
-import hashlib
 import ConfigParser
 from threading import Thread, Lock
 from Queue import Queue
-from time import sleep, gmtime, strftime
-from abc import ABCMeta, abstractmethod
 
 from liota.lib.utilities.utility import LiotaConfigPath
 from liota.lib.utilities.utility import DiscUtilities
-from liota.disc_listeners.discovery_listener import DiscoveryListener
 from liota.disc_listeners.named_pipe import NamedPipeListener
 from liota.disc_listeners.socket_svr import SocketListener
 from liota.disc_listeners.mqtt import MqttListener
@@ -121,13 +113,13 @@ class DiscoveryThread(Thread):
                         # retrieve device info file storage directory
                         self.dev_file_path = config.get('IOTCC_PATH', 'dev_file_path')
                     except ConfigParser.ParsingError as err:
-                        log.error('Could not parse log config file')
+                        log.error('Could not parse log config file' + err)
                         exit(-4)
                     if not os.path.exists(self.dev_file_path):
                         try:
                             os.makedirs(self.dev_file_path)
                         except OSError as exc:  # Python >2.5
-                            if exc.errno == errno.EEXIST and os.path.isdir(dev_file_path):
+                            if exc.errno == errno.EEXIST and os.path.isdir(self.dev_file_path):
                                 pass
                             else:
                                 log.error('Could not create device file storage directory')
@@ -431,24 +423,21 @@ class DiscoveryThread(Thread):
 
     #-----------------------------------------------------------------------
     # Record discovered device and register info
-    # key: device name, tuple (type, dev info list); list: (dcc, dev_)
-    def _save_devinfo(self, name, type):
+    # key: device name, tuple (dev_type, dev info list); list: (dcc, dev_)
+    def _save_devinfo(self, name, dev_type):
         # initialization
         with self.discovery_lock:
-            self._devices_discoverd[name] = (type, [])
+            self._devices_discoverd[name] = (dev_type, [])
 
     def _update_devinfo(self, name, reg_rec):
         with self.discovery_lock:
-            type = self._devices_discoverd[name][0]
+            dev_type = self._devices_discoverd[name][0]
             reg_list = self._devices_discoverd[name][1]
             reg_list.append(reg_rec)
-            self._devices_discoverd[name] = (type, reg_list)
+            self._devices_discoverd[name] = (dev_type, reg_list)
 
-    def reg_device_graphite(self, name, type, prop_dict):
-        from liota.dccs.graphite import Graphite
-        from liota.dcc_comms.socket_comms import SocketDccComms
+    def reg_device_graphite(self, name, dev_type, prop_dict):
         from liota.entities.devices.device import Device
-        from liota.entities.devices.simulated_device import SimulatedDevice
         from liota.lib.utilities.utility import systemUUID
 
         # Get values from configuration file
@@ -461,12 +450,9 @@ class DiscoveryThread(Thread):
             log.warning("graphite package is not running, please load it first!")
             return None, None
         graphite = self.pkg_registry.get("graphite")
-        """
-        graphite = Graphite(SocketDccComms(ip=config['GraphiteIP'],
-            port=config['GraphitePort']))
-        """
+
         tmp = systemUUID().get_uuid(name)
-        dev = Device(name, tmp, type)
+        dev = Device(name, tmp, dev_type)
         # Register device
         try:
             with self.discovery_lock:
@@ -476,9 +462,7 @@ class DiscoveryThread(Thread):
             return None, None
         return dev, reg_dev
 
-    def reg_device_iotcc(self, name, type, prop_dict):
-        from liota.dccs.iotcc import IotControlCenter
-        from liota.dcc_comms.websocket_dcc_comms import WebSocketDccComms
+    def reg_device_iotcc(self, name, dev_type, prop_dict):
         from liota.entities.devices.device import Device
         from liota.lib.utilities.utility import systemUUID
 
@@ -493,7 +477,7 @@ class DiscoveryThread(Thread):
             return None, None
         iotcc = self.pkg_registry.get("iotcc")
 
-        dev = Device(name, systemUUID().get_uuid(name), type)
+        dev = Device(name, systemUUID().get_uuid(name), dev_type)
         # Register device
         try:
             with self.discovery_lock:
@@ -572,11 +556,10 @@ class CmdMessengerThread(Thread):
             flags &= ~os.O_NONBLOCK
             fcntl.fcntl(ph, fcntl.F_SETFL, flags)
             while True:
-                buffer = os.read(ph, BUFFER_SIZE)
-                if not buffer:
+                buf = os.read(ph, BUFFER_SIZE)
+                if not buf:
                     break
         except OSError as err:
-            import errno
             if err.errno == errno.EAGAIN or err.errno == errno.EWOULDBLOCK:
                 pass  # It is supposed to raise one of these exceptions
             else:

@@ -32,23 +32,17 @@
 
 import logging
 import inspect
-import imp
 import os
 import sys
 import fcntl
-import stat
-import re
 import errno
-import hashlib
 import ConfigParser
 from threading import Thread, Lock
 from Queue import Queue
 from time import sleep
-from abc import ABCMeta, abstractmethod
 
 from liota.lib.utilities.utility import LiotaConfigPath
 from liota.lib.utilities.utility import DiscUtilities
-from liota.dev_sims.device_simulator import DeviceSimulator
 from liota.dev_sims.named_pipe import NamedPipeSimulator
 from liota.dev_sims.socket_clnt import SocketSimulator
 from liota.dev_sims.mqtt import MqttSimulator
@@ -413,7 +407,6 @@ class SimulatorThread(Thread):
         return True
 
 
-
 class CmdMessengerThread(Thread):
     """
     CmdMessengerThread does inter-process communication (IPC) to listen
@@ -434,11 +427,10 @@ class CmdMessengerThread(Thread):
             flags &= ~os.O_NONBLOCK
             fcntl.fcntl(ph, fcntl.F_SETFL, flags)
             while True:
-                buffer = os.read(ph, BUFFER_SIZE)
-                if not buffer:
+                buf = os.read(ph, BUFFER_SIZE)
+                if not buf:
                     break
         except OSError as err:
-            import errno
             if err.errno == errno.EAGAIN or err.errno == errno.EWOULDBLOCK:
                 pass  # It is supposed to raise one of these exceptions
             else:
