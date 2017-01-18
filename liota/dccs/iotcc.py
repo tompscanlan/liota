@@ -38,6 +38,8 @@ import ConfigParser
 import os
 from time import gmtime, strftime
 from threading import Lock
+import xml.etree.cElementTree as ET
+from xml.dom import minidom
 
 from liota.dccs.dcc import DataCenterComponent, RegistrationFailure
 from liota.lib.protocols.helix_protocol import HelixProtocol
@@ -134,6 +136,7 @@ class IotControlCenter(DataCenterComponent):
                 raise RegistrationFailure()
             log.info("Resource Registered {0}".format(entity_obj.name))
             if entity_obj.entity_type == "HelixGateway":
+                self.store_edge_system_uuid(entity_obj.name, self.reg_entity_id)
                 with self.file_ops_lock:
                     self.store_reg_entity_attributes("EdgeSystem", entity_obj.name,
                         self.reg_entity_id, None, None)
@@ -270,10 +273,39 @@ class IotControlCenter(DataCenterComponent):
         self.set_properties(reg_entity_obj, properties_added)
         log.info("Published metric unit with prefix to IoTCC")
 
+    def store_edge_system_uuid(self, entity_name, reg_entity_id):
+        config = ConfigParser.RawConfigParser()
+        fullPath = LiotaConfigPath().get_liota_fullpath()
+        if fullPath != '':
+            try:
+                if config.read(fullPath) != []:
+                    try:
+                        uuid_path = config.get('UUID_PATH', 'uuid_path')
+                        uuid_config = ConfigParser.RawConfigParser()
+                        uuid_config.optionxform = str
+                        uuid_config.add_section('GATEWAY')
+                        uuid_config.set('GATEWAY', 'uuid', reg_entity_id)
+                        uuid_config.set('GATEWAY', 'name', entity_name)
+                        with open(uuid_path, 'w') as configfile:
+                            uuid_config.write(configfile)
+                    except ConfigParser.ParsingError, err:
+                        log.error('Could not open config file ' + err)
+                else:
+                    raise IOError('Could not open config file ' + fullPath)
+            except IOError, err:
+                log.error('Could not open config file')
+        else:
+            # missing config file
+            log.warn('liota.conf file missing')
+
+    def prettify(self, elem):
+        """Return a pretty-printed XML string for the Element.
+        """
+        rough_string = ET.tostring(elem)
+        reparsed = minidom.parseString(rough_string)
+        return reparsed.toprettyxml(indent="    ")
 
     def store_edge_system_info(self, uuid, name, prop_dict):
-        import lxml.etree as etree
-
         """
         create (can overwrite) edge system info file of UUID.xml, with format of
         <attributes>
@@ -282,35 +314,27 @@ class IotControlCenter(DataCenterComponent):
         </attributes>
         except the first attribute is edge system name, all other attributes may vary
         """
+
         log.debug("store_edge_system_info")
         log.debug('{0}:{1}, prop_list: {2}'.format(uuid, name, prop_dict))
-        root = etree.Element("attributes")
+        root = ET.Element("attributes")
         # add edge system name as an attribute
-        child = etree.SubElement(root, "attribute")
-        attributes = child.attrib
-        attributes["name"] = "edge system name"
-        attributes["value"] = name
+        ET.SubElement(root, "attribute", name="edge system name", value=name)
         # add edge system properties as attributes
         if prop_dict is not None:
             for key in prop_dict.iterkeys():
                 value = prop_dict[key]
                 if key == 'entity type' or key == 'name' or key == 'device type':
                     continue
-                child1 = etree.SubElement(root, "attribute")
-                attributes = child1.attrib
-                attributes["name"] = key
-                attributes["value"] = value
+                ET.SubElement(root, "attribute", name=key, value=value)
         # add time stamp
-        child1 = etree.SubElement(root, "attribute")
-        attributes = child1.attrib
-        attributes["name"] = "LastSeenTimestamp"
-        attributes["value"] = strftime("%Y-%m-%dT%H:%M:%S", gmtime())
+        ET.SubElement(root, "attribute", name="LastSeenTimestamp",
+                      value=strftime("%Y-%m-%dT%H:%M:%S", gmtime()))
 
-        et = etree.ElementTree(root)
         log.debug("store_edge_system_info dev_file_path:{0}".format(self.dev_file_path))
         file_path = self.dev_file_path + '/' + uuid + '.xml'
-        et.write(file_path, pretty_print=True)
-
+        with open(file_path, "w") as fp:
+            fp.write(self.prettify(root))
         return
 
     def store_device_info(self, uuid, name, dev_type, prop_dict):

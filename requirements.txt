@@ -4,4 +4,3 @@ pint==0.7.2
 aenum==1.4.5
 paho-mqtt==1.2
 txThings==0.2.0
-lxml==3.7.0
